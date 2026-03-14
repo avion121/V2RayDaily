@@ -1,0 +1,41 @@
+# Run V2Ray fetcher every 5 minutes; commit only working, sorted nodes (America → UK → rest).
+name: Update V2Ray config (America → UK → rest)
+
+on:
+  schedule:
+    # Every 5 minutes (GitHub uses UTC; min interval is 5 min)
+    - cron: "*/5 * * * *"
+  workflow_dispatch:  # Allow manual run from Actions tab
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Allow push to commit the generated file
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run V2Ray fetcher (working nodes only, sorted America → UK → rest)
+        run: python america_europe_V2RayProxy.py
+
+      - name: Commit and push if config changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hiddify_america_europe.txt
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update hiddify_america_europe.txt (working nodes, America → UK → rest)"
+            git push
+          fi
