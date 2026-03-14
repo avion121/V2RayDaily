@@ -5,6 +5,11 @@ on:
   schedule:
     # Every 5 minutes (GitHub uses UTC; min interval is 5 min)
     - cron: "*/5 * * * *"
+  push:
+    branches: [main]
+    paths:
+      - "america_europe_V2RayProxy.py"
+      - ".github/workflows/update-v2ray-config.yml"
   workflow_dispatch:  # Allow manual run from Actions tab
 
 jobs:
