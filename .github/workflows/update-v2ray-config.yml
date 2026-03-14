@@ -1,5 +1,5 @@
-# Run V2Ray fetcher on schedule + push; commit only working, sorted nodes (America → UK → rest).
-# Note: GitHub's 5-min schedule is often delayed/skipped; 15 min is more reliable. For true 5 min, use cron-job.org + workflow_dispatch.
+# Run V2Ray fetcher; commit only working, sorted nodes (America → UK → rest).
+# For automatic runs every 15 min: use cron-job.org to POST to GitHub API (see .github/AUTO-RUN-SETUP.md).
 name: Update V2Ray config (America → UK → rest)
 
 on:
