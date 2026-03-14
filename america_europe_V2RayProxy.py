@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 """
-America & Europe V2Ray Proxy Fetcher
+America -> UK -> Europe V2Ray Proxy Fetcher (Strict No-Asia Version)
 Fetches free V2Ray (VMess/VLESS) configs from public subscriptions,
-filters to America and Europe only, tests with real protocol handshake when possible,
-and saves only working nodes to a single file for Hiddify (copy-paste from clipboard).
-Run: python america_europe_V2RayProxy.py
-Output: one file (hiddify_america_europe.txt) + content copied to clipboard.
+strictly excludes any Asian nodes, filters to America and Europe,
+orders them exactly as America 1st, UK 2nd, Rest of Europe 3rd,
+tests with real protocol handshake, and saves to a single file for Hiddify.
 """
 
 import base64
@@ -61,40 +60,50 @@ SUBSCRIPTION_URLS = [
     "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/refs/heads/main/subscriptions/filtered/subs/vmess.txt",
 ]
 
-# GeoIP: ip-api.com free tier = 45 requests/minute. Sleep between calls to stay under limit.
-# 45/60 => max 0.75 req/s => min 1.34s between requests; 1.5s is safe.
+# GeoIP rate limits
 GEOIP_RATE_LIMIT = 1.5
 TCP_TIMEOUT = 6
 FETCH_TIMEOUT = 25
 MAX_WORKERS = 8
-# Timeout for real protocol test (python-v2ray) per node
 STRICT_TEST_TIMEOUT_MS = 10000
-# Cap links to process when using GeoIP (slow). Ignored when SKIP_GEOIP=True.
 MAX_LINKS_TO_PROCESS = 8000
-# Skip GeoIP lookups: filter by node name/remark only (instant). Set False for accurate but slow GeoIP.
 SKIP_GEOIP = True
 
-# America (North, Central, South) and Europe only – ISO 3166-1 alpha-2
+# ---------------------------------------------------------------------------
+# Country Codes & Filters
+# ---------------------------------------------------------------------------
+
+# Explicit Exclusion: All Asian Countries
+ASIAN_CODES = {
+    "AF", "AM", "AZ", "BH", "BD", "BT", "BN", "KH", "CN", "CY", "GE", "IN", "ID", "IR",
+    "IQ", "IL", "JP", "JO", "KZ", "KW", "KG", "LA", "LB", "MY", "MV", "MN", "MM", "NP",
+    "KP", "OM", "PK", "PS", "PH", "QA", "SA", "SG", "KR", "LK", "SY", "TW", "TJ", "TH",
+    "TR", "TM", "AE", "UZ", "VN", "YE", "HK", "MO"
+}
+
+# Inclusion: America & Europe
 AMERICA_CODES = {
     "AG", "AR", "BS", "BB", "BZ", "BO", "BR", "CA", "CL", "CO", "CR", "CU", "DM", "DO",
     "EC", "SV", "GD", "GT", "GY", "HT", "HN", "JM", "MX", "NI", "PA", "PY", "PE", "KN",
     "LC", "SR", "TT", "US", "UY", "VC", "VE",
 }
 EUROPE_CODES = {
-    "AL", "AD", "AT", "BY", "BE", "BA", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+    "AL", "AD", "AT", "BY", "BE", "BA", "BG", "HR", "CZ", "DK", "EE", "FI", "FR",
     "DE", "GR", "HU", "IS", "IE", "IT", "LV", "LI", "LT", "LU", "MT", "MD", "MC", "ME",
     "NL", "MK", "NO", "PL", "PT", "RO", "RU", "SM", "RS", "SK", "SI", "ES", "SE", "CH",
-    "UA", "GB", "VA", "TR", "XK",
+    "UA", "GB", "VA", "XK",
 }
 ALLOWED_COUNTRY_CODES = AMERICA_CODES | EUROPE_CODES
+
+# For Ordering
+AMERICA_COUNTRY_CODES = AMERICA_CODES
+UK_COUNTRY_CODES = {"GB", "UK"}
 
 
 def out_dir():
     return Path(__file__).resolve().parent
 
-
 def _ensure_strict_tester():
-    """Try to load python-v2ray and ensure binaries. Returns (tester, parse_uri) or (None, None)."""
     global _v2ray_available
     if _v2ray_available is False:
         return None, None
@@ -116,19 +125,12 @@ def _ensure_strict_tester():
     except Exception as e:
         _v2ray_available = False
         print(f"  [note] Strict test (python-v2ray) unavailable: {e}")
-        print("  [note] Install with: pip install python-v2ray  (then re-run for real VMess/VLESS checks)")
         return None, None
 
-
 def test_nodes_strict(links: list[str]) -> tuple[list[str], list[dict]]:
-    """
-    Test nodes with real VMess/VLESS handshake via python-v2ray.
-    Returns (list of working links, list of result dicts with tag/ping_ms/status).
-    """
     tester, parse_uri_fn = _ensure_strict_tester()
     if not tester or not parse_uri_fn:
         return [], []
-    # Keep order: parsed[i] and links[i] correspond (only include parsed where parse succeeded)
     parsed = []
     valid_links = []
     for uri in links:
@@ -146,13 +148,11 @@ def test_nodes_strict(links: list[str]) -> tuple[list[str], list[dict]]:
     except Exception as e:
         print(f"  [warn] Strict test failed: {e}")
         return [], []
-    # Results are in same order as parsed; parsed[i] <-> valid_links[i]
     working_links = [
         valid_links[i] for i, r in enumerate(results)
         if i < len(valid_links) and r.get("status") == "success"
     ]
     return working_links, results
-
 
 def fetch_url(url: str) -> str | None:
     try:
@@ -162,7 +162,6 @@ def fetch_url(url: str) -> str | None:
     except Exception as e:
         print(f"  [skip] {url[:60]}... -> {e}")
         return None
-
 
 def decode_subscription(raw: str) -> list[str]:
     links = []
@@ -185,7 +184,6 @@ def decode_subscription(raw: str) -> list[str]:
             links.append(line)
     return list(dict.fromkeys(links))
 
-
 def parse_vmess(link: str) -> dict | None:
     if not link.startswith("vmess://"):
         return None
@@ -203,7 +201,6 @@ def parse_vmess(link: str) -> dict | None:
     except Exception:
         return None
 
-
 def parse_vless(link: str) -> dict | None:
     if not link.startswith("vless://"):
         return None
@@ -211,7 +208,6 @@ def parse_vless(link: str) -> dict | None:
         parsed = urllib.parse.urlparse(link)
         host = parsed.hostname or ""
         port = parsed.port or 443
-        # UUID is before @ in netloc, e.g. uuid@host:port
         netloc = parsed.netloc or ""
         uid = (netloc.split("@")[0] if "@" in netloc else "").strip()
         if not host:
@@ -220,10 +216,8 @@ def parse_vless(link: str) -> dict | None:
     except Exception:
         return None
 
-
 def parse_link(link: str) -> dict | None:
     return parse_vmess(link) or parse_vless(link)
-
 
 def get_country(host: str, cache: dict) -> str | None:
     if host in cache:
@@ -244,43 +238,58 @@ def get_country(host: str, cache: dict) -> str | None:
     cache[host] = None
     return None
 
-
 def is_america_or_europe(country: str | None, ps: str) -> bool:
+    ps_upper = (" " + (ps or "") + " ").upper()
+
+    # 1. STRICT EXCLUSION: Reject immediately if Asian code or keyword is found
+    asian_keywords = (
+        " ASIA ", " JAPAN", " JP ", " CHINA", " CN ", " SINGAPORE", " SG ",
+        " HONG KONG", " HK ", " KOREA", " KR ", " INDIA", " IN ", " TAIWAN", 
+        " TW ", " VIETNAM", " VN ", " MALAYSIA", " MY ", " THAILAND", " TH ", 
+        " INDONESIA", " ID ", " PHILIPPINES", " PH ", " IRAN", " IR "
+    )
+    
+    if country and country.upper() in ASIAN_CODES:
+        return False
+        
+    if any(x in ps_upper for x in asian_keywords):
+        return False
+
+    # 2. INCLUSION: Proceed with checking for America/Europe
     if country and country.upper() in ALLOWED_COUNTRY_CODES:
         return True
-    if country in ("UK",):  # some APIs return UK
+    if country in ("UK",):  
         return True
-    ps_upper = (" " + (ps or "") + " ").upper()
-    # Match country names and common abbreviations in node remarks
+
     america_keywords = (" USA ", " US ", " UNITED STATES", " CANADA ", " MEXICO ", " BRAZIL ", " AMERICA", " NORTH ", " SOUTH ", " CA ", " MX ", " BR ")
     europe_keywords = (
         " UK ", " UNITED KINGDOM", " GERMANY", " FRANCE", " NETHERLANDS", " EUROPE", " EU ", " DE ", " FR ", " NL ", " ITALY", " SPAIN ",
         " NORDIC ", " NETHERLAND", " ROMANIA", " POLAND", " SWEDEN", " NORWAY", " FINLAND", " SWITZERLAND", " AUSTRIA", " BELGIUM ",
-        " PORTUGAL", " GREECE", " TURKEY", " UKRAINE", " IRELAND", " CZECH", " HUNGARY", " BULGARIA", " CROATIA", " SERBIA ",
+        " PORTUGAL", " GREECE", " UKRAINE", " IRELAND", " CZECH", " HUNGARY", " BULGARIA", " CROATIA", " SERBIA ", " GB "
     )
+    
     return any(x in ps_upper for x in america_keywords) or any(x in ps_upper for x in europe_keywords)
 
-
-# Order in output: 0 = America first, 1 = UK, 2 = rest of Europe (client tries in this order)
-AMERICA_COUNTRY_CODES = {"US", "CA", "MX", "BR", "AR", "CL", "CO", "PE", "VE", "EC", "GT", "CU", "HT", "DO", "HN", "JM", "PA", "PY", "UY", "CR", "BO", "SV", "NI", "BS", "BB", "BZ", "DM", "GD", "GY", "SR", "TT", "VC", "AG"}
-UK_COUNTRY_CODES = {"GB", "UK"}
-
-
 def region_priority(node: dict) -> int:
-    """0 = America (first), 1 = UK, 2 = rest of Europe."""
+    """Assigns priority for sorting: 0 (America), 1 (UK), 2 (Rest of Europe)."""
     country = (node.get("country") or "").upper()
     ps = " " + (node.get("ps") or "") + " "
     ps_upper = ps.upper()
+    
+    # Check America First (Priority 0)
     if country in AMERICA_COUNTRY_CODES:
         return 0
-    if country in UK_COUNTRY_CODES:
-        return 1
     if " USA " in ps_upper or " US " in ps_upper or " UNITED STATES" in ps_upper or " CANADA " in ps_upper or " AMERICA" in ps_upper or " CA " in ps_upper or " MX " in ps_upper or " BRAZIL " in ps_upper:
         return 0
-    if " UK " in ps_upper or " UNITED KINGDOM" in ps_upper:
+        
+    # Check UK Second (Priority 1)
+    if country in UK_COUNTRY_CODES:
         return 1
+    if " UK " in ps_upper or " UNITED KINGDOM" in ps_upper or " GB " in ps_upper:
+        return 1
+        
+    # Everything else (Europe) gets Priority 2
     return 2
-
 
 def test_tcp(host: str, port: int) -> bool:
     try:
@@ -290,13 +299,11 @@ def test_tcp(host: str, port: int) -> bool:
     except (socket.timeout, OSError, socket.gaierror):
         return False
 
-
 def main():
-    print("America & Europe V2Ray Proxy – single file for Hiddify (clipboard paste).\n")
+    print("V2Ray Proxy Fetcher: America -> UK -> Europe (Strict No-Asia Version)\n")
     base = out_dir()
     print(f"Output directory: {base}\n")
 
-    # 1) Fetch all subscriptions
     all_links = []
     for url in SUBSCRIPTION_URLS:
         print(f"Fetching: {url[:70]}...")
@@ -306,6 +313,7 @@ def main():
             all_links.extend(links)
     all_links = list(dict.fromkeys(all_links))
     print(f"\nTotal unique VMess/VLESS links: {len(all_links)}")
+    
     max_links = MAX_LINKS_TO_PROCESS if not SKIP_GEOIP else min(len(all_links), 20000)
     if len(all_links) > max_links:
         all_links = all_links[:max_links]
@@ -315,14 +323,15 @@ def main():
         print("No links found. Check internet or subscription URLs.")
         return
 
-    # 2) Parse and filter by America & Europe (by name/remark only when SKIP_GEOIP, else GeoIP)
     if SKIP_GEOIP:
-        print("Filtering by region (America/Europe) using node names only (fast)...")
+        print("Filtering by region (America/Europe) and EXCLUDING Asia using node names only (fast)...")
     else:
-        print("Filtering by region (America/Europe)... GeoIP lookups are rate-limited, this may take a while.")
+        print("Filtering by region and EXCLUDING Asia... GeoIP lookups are rate-limited, this may take a while.")
+        
     nodes = []
     geo_cache = {} if not SKIP_GEOIP else None
     total = len(all_links)
+    
     for i, link in enumerate(all_links):
         if not SKIP_GEOIP and ((i + 1) % 500 == 0 or i == 0):
             print(f"  Progress: {i + 1}/{total} links, {len(geo_cache)} hosts looked up, {len(nodes)} America/Europe so far...")
@@ -330,18 +339,19 @@ def main():
         if not node:
             continue
         country = None if SKIP_GEOIP else get_country(node["host"], geo_cache)
+        
         if is_america_or_europe(country, node["ps"]):
             node["country"] = country or "?"
             nodes.append(node)
+            
     if SKIP_GEOIP and total > 1000:
         print(f"  Processed {total} links.")
-    print(f"After America & Europe filter: {len(nodes)} nodes")
+    print(f"After Strict America & Europe filter (No Asia): {len(nodes)} nodes")
 
     if not nodes:
         print("No America/Europe nodes found. Try again later or add more subscription URLs.")
         return
 
-    # 3) Test: prefer real VMess/VLESS handshake (python-v2ray); fallback to TCP
     working = []
     links_only_for_test = [n["link"] for n in nodes]
 
@@ -377,28 +387,32 @@ def main():
         print("No working nodes. Run again later or install python-v2ray for stricter checks: pip install python-v2ray")
         return
 
-    # 4) Order: America first, then UK, then rest of Europe (default connection order for Hiddify)
+    # -----------------------------------------------------------------------
+    # CRITICAL SORTING: America (0) -> UK (1) -> Rest of Europe (2)
+    # -----------------------------------------------------------------------
     working.sort(key=region_priority)
+    
     n_america = sum(1 for n in working if region_priority(n) == 0)
     n_uk = sum(1 for n in working if region_priority(n) == 1)
     n_rest = len(working) - n_america - n_uk
-    print(f"  Order: America {n_america}, UK {n_uk}, rest {n_rest}")
+    print(f"  Final Order Count: America {n_america}, UK {n_uk}, Rest of Europe {n_rest}")
 
-    # 5) One config per server (host:port:uuid) – only running nodes, no duplicates
+    # Remove duplicates (dict preserves the strict order we just established)
     seen_key: dict[tuple[str, int, str], str] = {}
     for n in working:
         key = (n["host"], n["port"], n.get("uuid") or "")
         if key not in seen_key:
             seen_key[key] = n["link"]
     links_only = list(seen_key.values())
+    
     print(f"Unique nodes (one per server): {len(links_only)}")
     content = "\n".join(links_only)
     out_file = base / "hiddify_america_europe.txt"
+    
     with open(out_file, "w", encoding="utf-8") as f:
         f.write(content)
-    print(f"\nSaved single file: {out_file}")
+    print(f"\nSaved single file strictly ordered: {out_file}")
 
-    # Copy to clipboard for Hiddify paste (skip in CI e.g. GitHub Actions)
     in_ci = os.environ.get("CI") == "true"
     if not in_ci and pyperclip:
         try:
@@ -411,8 +425,6 @@ def main():
         print("Or open hiddify_america_europe.txt, Ctrl+A, Ctrl+C, then paste in Hiddify.")
 
     print("\nDone. In Hiddify: paste from clipboard or import the file.")
-    print("Public nodes can go offline anytime; re-run this script to refresh.")
-
 
 if __name__ == "__main__":
     main()
