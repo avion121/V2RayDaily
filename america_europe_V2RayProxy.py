@@ -3,7 +3,6 @@ import base64, json, socket, urllib.parse, time, sys, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# Try to import requests, install if missing (for local testing)
 try:
     import requests
 except ImportError:
@@ -13,14 +12,14 @@ except ImportError:
 
 # --- CONFIGURATION (CA, US, UK ONLY) ---
 TARGET_CODES = {"CA", "US", "GB", "UK"}
-# Keywords & Emojis for instant pre-filtering
-RE_TARGET = re.compile(r"CA|CANADA|US|USA|AMERICA|UNITED STATES|UK|GB|LONDON|UNITED KINGDOM|TORONTO|🇨🇦|🇺🇸|🇬🇧", re.I)
+# Keywords for filtering names after decoding
+TARGET_KEYWORDS = ["CA", "CANADA", "US", "USA", "AMERICA", "UNITED STATES", "UK", "GB", "LONDON", "UNITED KINGDOM", "TORONTO", "🇨🇦", "🇺🇸", "🇬🇧"]
 
 # Performance Tuning
 FETCH_WORKERS = 50
 TEST_WORKERS = 100  
-TIMEOUT_FETCH = 10
-TIMEOUT_TCP = 2.0   
+TIMEOUT_FETCH = 15
+TIMEOUT_TCP = 3.0   # Slightly relaxed to ensure we catch working nodes
 MAX_LINKS = 100000
 
 SUBSCRIPTION_URLS = [
@@ -44,17 +43,19 @@ SUBSCRIPTION_URLS = [
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
     "https://raw.githubusercontent.com/Delta-Kronecker/V2ray-Config/refs/heads/main/config/all_configs.txt",
     "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
-    "https://raw.githubusercontent.com/sakha1370/OpenRay/refs/heads/main/output/all_valid_proxies.txt",
     "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/refs/heads/main/subscriptions/filtered/subs/vless.txt",
-    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/refs/heads/main/subscriptions/filtered/subs/vmess.txt"
+    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/refs/heads/main/subscriptions/filtered/subs/vmess.txt",
+    "https://raw.githubusercontent.com/LonUp/NodeList/main/V2RAY/Latest.txt"
 ]
 
 def get_links(url):
     try:
         r = requests.get(url, timeout=TIMEOUT_FETCH)
         content = r.text
-        if not content.startswith(('vmess', 'vless')):
-            try: content = base64.b64decode(content + "==").decode('utf-8', 'ignore')
+        # Check if the whole subscription is base64 encoded
+        if not any(x in content[:50] for x in ['vmess://', 'vless://']):
+            try:
+                content = base64.b64decode(content.strip() + "==").decode('utf-8', 'ignore')
             except: pass
         return re.findall(r'(vless|vmess)://[^\s]+', content)
     except: return []
@@ -62,11 +63,18 @@ def get_links(url):
 def parse(link):
     try:
         if link.startswith("vmess://"):
+            # VMess names are hidden in base64 JSON
             d = json.loads(base64.b64decode(link[8:] + "==").decode('utf-8'))
             return {"h": d.get("add"), "p": int(d.get("port")), "ps": d.get("ps", ""), "raw": link}
-        parsed = urllib.parse.urlparse(link)
-        return {"h": parsed.hostname, "p": parsed.port or 443, "ps": parsed.fragment, "raw": link}
+        elif link.startswith("vless://"):
+            # VLESS names are usually in the fragment (#)
+            parsed = urllib.parse.urlparse(link)
+            return {"h": parsed.hostname, "p": parsed.port or 443, "ps": urllib.parse.unquote(parsed.fragment), "raw": link}
     except: return None
+
+def is_target(ps):
+    ps_up = str(ps).upper()
+    return any(k in ps_up for k in TARGET_KEYWORDS)
 
 def check_tcp(node):
     try:
@@ -75,17 +83,17 @@ def check_tcp(node):
     except: return None
 
 def verify_geo(nodes):
-    """The Secret Sauce: Batch check 100 IPs at once."""
     if not nodes: return []
     unique_hosts = list({n['h'] for n in nodes})
     mapping = {}
     for i in range(0, len(unique_hosts), 100):
         batch = unique_hosts[i:i+100]
         try:
-            r = requests.post("http://ip-api.com/batch?fields=query,countryCode", json=batch, timeout=10)
-            for res in r.json(): mapping[res['query']] = res.get('countryCode')
+            r = requests.post("http://ip-api.com/batch?fields=query,countryCode", json=batch, timeout=12)
+            for res in r.json():
+                if 'query' in res: mapping[res['query']] = res.get('countryCode')
         except: pass
-        time.sleep(0.5) 
+        time.sleep(0.6)
     
     verified = []
     for n in nodes:
@@ -96,51 +104,58 @@ def verify_geo(nodes):
     return verified
 
 def main():
-    start = time.time()
+    start_time = time.time()
     
-    # 1. Parallel Fetch (fixed keyword argument)
-    print("[*] Rapidly Scouring GitHub...")
+    # 1. Scrape All
+    print("[*] Scouring GitHub...")
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
-        results = list(pool.map(get_links, SUBSCRIPTION_URLS))
-    all_raw = list(set([item for sublist in results for item in sublist]))[:MAX_LINKS]
-    
-    # 2. Fast Filter & Parse
-    print(f"[*] Pre-filtering {len(all_raw)} links...")
+        link_lists = list(pool.map(get_links, SUBSCRIPTION_URLS))
+    all_raw = list(set([item for sublist in link_lists for item in sublist]))[:MAX_LINKS]
+    print(f"[*] Found {len(all_raw)} total links.")
+
+    # 2. Parse and Filter by Name
+    print("[*] Decoding and Filtering CA/US/UK nodes...")
     candidates = []
     for link in all_raw:
-        if RE_TARGET.search(link): 
-            p = parse(link)
-            if p: candidates.append(p)
-    
-    # 3. Parallel TCP Check (fixed keyword argument)
-    print(f"[*] Testing {len(candidates)} nodes...")
+        node = parse(link)
+        if node and is_target(node['ps']):
+            candidates.append(node)
+    print(f"[*] Found {len(candidates)} nodes claiming to be target regions.")
+
+    if not candidates:
+        print("[-] No CA/US/UK nodes found. Script stopping to prevent empty file.")
+        return
+
+    # 3. Parallel TCP Test
+    print(f"[*] Testing {len(candidates)} nodes for connectivity...")
     working = []
     with ThreadPoolExecutor(max_workers=TEST_WORKERS) as pool:
         futures = [pool.submit(check_tcp, c) for c in candidates]
         for f in as_completed(futures):
             res = f.result()
             if res: working.append(res)
+    print(f"[*] {len(working)} nodes are online.")
+
+    # 4. Batch Geo-Lock
+    print("[*] Verifying actual IP locations (Geo-Lock)...")
+    final_nodes = verify_geo(working)
     
-    # 4. Strict Batch Geo-Verification
-    print(f"[*] Verified Online: {len(working)}. Performing final Geo-Lock...")
-    final = verify_geo(working)
-    
-    # 5. Sort CA -> US -> UK
+    # 5. Final Sort & Save
     order = {"CA": 0, "US": 1, "GB": 2, "UK": 2}
-    final.sort(key=lambda x: order.get(x['cc'], 9))
+    final_nodes.sort(key=lambda x: order.get(x['cc'], 9))
     
-    # Save (Deduplicate by Host:Port)
-    seen, output = set(), []
-    for n in final:
+    seen, output_links = set(), []
+    for n in final_nodes:
         key = f"{n['h']}:{n['p']}"
         if key not in seen:
             seen.add(key)
-            output.append(n['raw'])
+            output_links.append(n['raw'])
             
-    Path("hiddify_ca_us_uk.txt").write_text("\n".join(output))
-    
-    elapsed = time.time() - start
-    print(f"\n[DONE] Saved {len(output)} verified nodes in {elapsed:.1f} seconds!")
+    if output_links:
+        Path("hiddify_ca_us_uk.txt").write_text("\n".join(output_links))
+        print(f"\n[DONE] Saved {len(output_links)} verified nodes in {time.time()-start_time:.1f}s")
+    else:
+        print("\n[-] No nodes survived Geo-IP verification.")
 
 if __name__ == "__main__":
     main()
