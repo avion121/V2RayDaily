@@ -1,41 +1,24 @@
 #!/usr/bin/env python3
-from __future__ import annotations
-
-"""
-TURBO CA, US, UK V2Ray Proxy Fetcher
-Optimized for Speed: Parallel Fetching + Batch GeoIP + High-Concurrency Testing.
-STRICTLY enforces Canada, USA, and UK nodes ONLY.
-"""
-
-import base64
-import json
-import os
-import socket
-import subprocess
-import sys
-import time
-import urllib.parse
+import base64, json, socket, urllib.parse, time, sys, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 try:
     import requests
 except ImportError:
+    import subprocess
     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "-q"])
     import requests
 
-# Optimization Constants
-MAX_FETCH_WORKERS = 15
-MAX_TEST_WORKERS = 50  # Increased for speed
-TCP_TIMEOUT = 3.5
-FETCH_TIMEOUT = 15
-MAX_LINKS_TO_PROCESS = 80000
+# --- STRICT TARGETS (Physical IP Verification) ---
+TARGET_CODES = {"CA", "US", "GB", "UK"}
 
-# Strict Allowlist
-CANADA_CODES = {"CA"}
-USA_CODES = {"US"}
-UK_CODES = {"GB", "UK"}
-STRICT_ALLOWED_COUNTRIES = CANADA_CODES | USA_CODES | UK_CODES
+# Tuning for GitHub Actions
+FETCH_WORKERS = 50
+TEST_WORKERS = 100  
+TIMEOUT_FETCH = 15
+TIMEOUT_TCP = 2.5   # Fast nodes only
+MAX_LINKS = 100000
 
 SUBSCRIPTION_URLS = [
     "https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity",
@@ -58,130 +41,110 @@ SUBSCRIPTION_URLS = [
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
     "https://raw.githubusercontent.com/Delta-Kronecker/V2ray-Config/refs/heads/main/config/all_configs.txt",
     "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
-    "https://raw.githubusercontent.com/sakha1370/OpenRay/refs/heads/main/output/all_valid_proxies.txt",
-    "https://raw.githubusercontent.com/V2RayRoot/V2RayConfig/refs/heads/main/Config/vless.txt",
     "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/refs/heads/main/subscriptions/filtered/subs/vless.txt",
     "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/refs/heads/main/subscriptions/filtered/subs/vmess.txt",
     "https://raw.githubusercontent.com/LonUp/NodeList/main/V2RAY/Latest.txt"
 ]
 
-def decode_subscription(raw: str) -> list[str]:
-    links = []
-    text = raw.strip()
-    # Handle Base64 encoded subscriptions
+def get_links(url):
     try:
-        if not text.startswith(('vmess://', 'vless://')):
-            text = base64.b64decode(text + "==").decode("utf-8", errors="ignore")
-    except: pass
-    
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith(("vmess://", "vless://")):
-            links.append(line)
-    return links
+        r = requests.get(url, timeout=TIMEOUT_FETCH)
+        content = r.text
+        if not any(x in content[:100] for x in ['vmess://', 'vless://']):
+            try:
+                content = base64.b64decode(content.strip() + "==").decode('utf-8', 'ignore')
+            except: pass
+        return re.findall(r'(vless|vmess)://[^\s]+', content)
+    except: return []
 
-def fetch_all_parallel():
-    all_links = []
-    def fetch_one(url):
-        try:
-            r = requests.get(url, timeout=FETCH_TIMEOUT)
-            return decode_subscription(r.text) if r.status_code == 200 else []
-        except: return []
-
-    with ThreadPoolExecutor(max_workers=MAX_FETCH_WORKERS) as executor:
-        futures = [executor.submit(fetch_one, url) for url in SUBSCRIPTION_URLS]
-        for fut in as_completed(futures):
-            all_links.extend(fut.result())
-    return list(dict.fromkeys(all_links))
-
-def parse_link(link: str) -> dict | None:
+def parse(link):
     try:
         if link.startswith("vmess://"):
-            data = json.loads(base64.b64decode(link[8:] + "==").decode("utf-8"))
-            return {"host": data.get("add"), "port": int(data.get("port", 0)), "ps": data.get("ps", ""), "link": link}
-        elif link.startswith("vless://"):
-            parsed = urllib.parse.urlparse(link)
-            return {"host": parsed.hostname, "port": parsed.port or 443, "ps": parsed.fragment, "link": link}
+            d = json.loads(base64.b64decode(link[8:] + "==").decode('utf-8'))
+            return {"h": d.get("add"), "p": int(d.get("port")), "raw": link}
+        parsed = urllib.parse.urlparse(link)
+        return {"h": parsed.hostname, "p": parsed.port or 443, "raw": link}
     except: return None
 
-def is_target_name(ps: str) -> bool:
-    ps_up = (" " + (ps or "") + " ").upper()
-    targets = {"CA", "CANADA", "US", "USA", "AMERICA", "UK", "GB", "LONDON", "KINGDOM", "TORONTO", "🇺🇸", "🇨🇦", "🇬🇧"}
-    return any(t in ps_up for t in targets)
-
-def test_tcp(node: dict) -> dict | None:
+def check_tcp(node):
     try:
-        with socket.create_connection((node["host"], node["port"]), timeout=TCP_TIMEOUT):
+        with socket.create_connection((node['h'], node['p']), timeout=TIMEOUT_TCP):
             return node
     except: return None
 
-def verify_geo_batch(nodes: list[dict]) -> list[dict]:
-    """VERIFICATION TURBO: Checks 100 IPs in one single request."""
+def verify_geo_and_filter(nodes):
+    """The Ultimate Filter: Checks physical location of every working node."""
     if not nodes: return []
-    verified = []
-    # Extract unique hosts
-    hosts = list({n["host"] for n in nodes})
-    host_to_country = {}
-
-    # ip-api batch allows 100 per request
-    for i in range(0, len(hosts), 100):
-        batch = hosts[i : i + 100]
+    unique_hosts = list({n['h'] for n in nodes})
+    mapping = {}
+    
+    print(f"[*] Analyzing {len(unique_hosts)} IP locations...")
+    for i in range(0, len(unique_hosts), 100):
+        batch = unique_hosts[i:i+100]
         try:
             r = requests.post("http://ip-api.com/batch?fields=query,countryCode", json=batch, timeout=15)
-            for item in r.json():
-                host_to_country[item["query"]] = item.get("countryCode", "")
+            for res in r.json():
+                if 'query' in res: mapping[res['query']] = res.get('countryCode')
         except: pass
-        time.sleep(1.5) # Wait for batch limit (15 requests/min)
-
+        time.sleep(0.6) # Anti-ban delay
+    
+    verified = []
     for n in nodes:
-        code = host_to_country.get(n["host"], "")
-        if code in STRICT_ALLOWED_COUNTRIES:
-            n["country"] = code
+        code = mapping.get(n['h'])
+        if code in TARGET_CODES:
+            n['cc'] = code
             verified.append(n)
     return verified
 
 def main():
-    print("[1/4] Turbo Fetching GitHub Repos...")
-    raw_links = fetch_all_parallel()
-    print(f"[*] Found {len(raw_links)} raw links.")
-
-    print("[2/4] Filtering names (CA/US/UK only)...")
-    candidates = []
-    for link in raw_links[:MAX_LINKS_TO_PROCESS]:
-        node = parse_link(link)
-        if node and is_target_name(node["ps"]):
-            candidates.append(node)
+    start_time = time.time()
     
-    print(f"[*] {len(candidates)} candidates found. Testing connectivity...")
+    # 1. Scrape everything
+    print("[*] Deep Scouring GitHub Repositories...")
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
+        link_lists = list(pool.map(get_links, SUBSCRIPTION_URLS))
+    
+    all_raw = list(set([item for sublist in link_lists for item in sublist]))[:MAX_LINKS]
+    print(f"[*] Found {len(all_raw)} total unique links.")
 
-    print("[3/4] Testing {len(candidates)} nodes in parallel...")
+    # 2. Parse all (No filtering yet)
+    nodes = []
+    for link in all_raw:
+        p = parse(link)
+        if p: nodes.append(p)
+
+    # 3. Test Connectivity (The primary filter)
+    print(f"[*] Testing {len(nodes)} nodes for connectivity...")
     working = []
-    with ThreadPoolExecutor(max_workers=MAX_TEST_WORKERS) as executor:
-        futures = [executor.submit(test_tcp, n) for n in candidates]
-        for fut in as_completed(futures):
-            res = fut.result()
+    with ThreadPoolExecutor(max_workers=TEST_WORKERS) as pool:
+        futures = [pool.submit(check_tcp, n) for n in nodes]
+        for f in as_completed(futures):
+            res = f.result()
             if res: working.append(res)
     
-    print(f"[*] {len(working)} nodes online. Starting Batch Geo-Verification...")
+    print(f"[*] {len(working)} nodes are alive and fast.")
 
-    print("[4/4] Final Geo-IP Strict Check (Batch Mode)...")
-    final = verify_geo_batch(working)
+    # 4. Filter by physical location (Geo-Lock)
+    print("[*] Applying Strict CA/US/UK Geo-Lock...")
+    final_nodes = verify_geo_and_filter(working)
     
-    # Sort CA -> US -> UK
-    priority = {"CA": 0, "US": 1, "GB": 2, "UK": 2}
-    final.sort(key=lambda x: priority.get(x["country"], 9))
-
-    # Remove duplicates and save
-    seen = set()
-    result_links = []
-    for n in final:
-        key = (n["host"], n["port"])
+    # 5. Sort CA -> US -> UK
+    order = {"CA": 0, "US": 1, "GB": 2, "UK": 2}
+    final_nodes.sort(key=lambda x: order.get(x['cc'], 9))
+    
+    # Deduplicate and save
+    seen, output = set(), []
+    for n in final_nodes:
+        key = f"{n['h']}:{n['p']}"
         if key not in seen:
             seen.add(key)
-            result_links.append(n["link"])
-
-    Path("hiddify_ca_us_uk.txt").write_text("\n".join(result_links))
-    print(f"\nDONE! {len(result_links)} strictly verified nodes saved to hiddify_ca_us_uk.txt")
+            output.append(n['raw'])
+            
+    if output:
+        Path("hiddify_ca_us_uk.txt").write_text("\n".join(output))
+        print(f"\n[DONE] Saved {len(output)} strictly verified CA/US/UK nodes in {time.time()-start_time:.1f}s")
+    else:
+        print("\n[-] No CA/US/UK nodes found. This can happen if the free pools are currently empty for these regions.")
 
 if __name__ == "__main__":
     main()
