@@ -1,13 +1,11 @@
 name: Update V2Ray config (Strict CA, US, UK)
 
-# Prevents multiple processes from running at once
 concurrency:
   group: v2ray-update
   cancel-in-progress: false 
 
 on:
   schedule:
-    # Runs exactly every 2 hours
     - cron: "0 */2 * * *"
   push:
     branches: [main]
@@ -35,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements_v2ray_proxy.txt
 
-      - name: Run V2Ray fetcher (Optimized for 10-min limit)
+      - name: Run V2Ray fetcher
         run: python america_europe_V2RayProxy.py
 
       - name: Commit and push if config changed
@@ -46,6 +44,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "chore: update hiddify_ca_us_uk.txt (Optimized Run)"
+            git commit -m "chore: update hiddify_ca_us_uk.txt"
             git push
           fi
