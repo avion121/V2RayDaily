@@ -3,6 +3,7 @@ import base64, json, socket, urllib.parse, time, sys, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+# Ensure requests is available
 try:
     import requests
 except ImportError:
@@ -10,14 +11,12 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "-q"])
     import requests
 
-# --- STRICT TARGETS (Physical IP Verification) ---
+# --- CONFIGURATION ---
 TARGET_CODES = {"CA", "US", "GB", "UK"}
-
-# Tuning for GitHub Actions
 FETCH_WORKERS = 50
-TEST_WORKERS = 100  
-TIMEOUT_FETCH = 15
-TIMEOUT_TCP = 2.5   # Fast nodes only
+TEST_WORKERS = 80
+TIMEOUT_FETCH = 20
+TIMEOUT_TCP = 3.5   # Increased for better reliability
 MAX_LINKS = 100000
 
 SUBSCRIPTION_URLS = [
@@ -32,17 +31,11 @@ SUBSCRIPTION_URLS = [
     "https://raw.githubusercontent.com/ts-sf/fly/main/v2",
     "https://raw.githubusercontent.com/Alireza-ok/xray/main/mix",
     "https://raw.githubusercontent.com/freev2rayconfig/V2RAY_SUBSCRIPTION_LINK/main/v2rayconfigs.txt",
-    "https://raw.githubusercontent.com/peasoft/NoMoreWalls/master/list.txt",
     "https://raw.githubusercontent.com/mfuu/v2ray/master/v2ray",
     "https://raw.githubusercontent.com/ermaozi/get_subscribe/main/subscribe/v2ray.txt",
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
-    "https://raw.githubusercontent.com/Leon406/Sub/master/sub/share/vless",
-    "https://raw.githubusercontent.com/Leon406/Sub/master/sub/share/vmess",
     "https://raw.githubusercontent.com/roosterkid/openproxylist/main/V2RAY_RAW.txt",
     "https://raw.githubusercontent.com/Delta-Kronecker/V2ray-Config/refs/heads/main/config/all_configs.txt",
-    "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
-    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/refs/heads/main/subscriptions/filtered/subs/vless.txt",
-    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/refs/heads/main/subscriptions/filtered/subs/vmess.txt",
     "https://raw.githubusercontent.com/LonUp/NodeList/main/V2RAY/Latest.txt"
 ]
 
@@ -50,7 +43,8 @@ def get_links(url):
     try:
         r = requests.get(url, timeout=TIMEOUT_FETCH)
         content = r.text
-        if not any(x in content[:100] for x in ['vmess://', 'vless://']):
+        # Logic to handle base64 wrapped subs
+        if not any(x in content[:200] for x in ['vmess://', 'vless://']):
             try:
                 content = base64.b64decode(content.strip() + "==").decode('utf-8', 'ignore')
             except: pass
@@ -60,10 +54,12 @@ def get_links(url):
 def parse(link):
     try:
         if link.startswith("vmess://"):
+            # VMess is complex; we extract the host for GeoIP
             d = json.loads(base64.b64decode(link[8:] + "==").decode('utf-8'))
             return {"h": d.get("add"), "p": int(d.get("port")), "raw": link}
         parsed = urllib.parse.urlparse(link)
-        return {"h": parsed.hostname, "p": parsed.port or 443, "raw": link}
+        if parsed.hostname:
+            return {"h": parsed.hostname, "p": parsed.port or 443, "raw": link}
     except: return None
 
 def check_tcp(node):
@@ -72,13 +68,10 @@ def check_tcp(node):
             return node
     except: return None
 
-def verify_geo_and_filter(nodes):
-    """The Ultimate Filter: Checks physical location of every working node."""
+def verify_geo(nodes):
     if not nodes: return []
     unique_hosts = list({n['h'] for n in nodes})
     mapping = {}
-    
-    print(f"[*] Analyzing {len(unique_hosts)} IP locations...")
     for i in range(0, len(unique_hosts), 100):
         batch = unique_hosts[i:i+100]
         try:
@@ -86,7 +79,7 @@ def verify_geo_and_filter(nodes):
             for res in r.json():
                 if 'query' in res: mapping[res['query']] = res.get('countryCode')
         except: pass
-        time.sleep(0.6) # Anti-ban delay
+        time.sleep(0.8)
     
     verified = []
     for n in nodes:
@@ -98,41 +91,40 @@ def verify_geo_and_filter(nodes):
 
 def main():
     start_time = time.time()
+    out_file = Path("hiddify_ca_us_uk.txt")
     
-    # 1. Scrape everything
-    print("[*] Deep Scouring GitHub Repositories...")
+    # GUARANTEE: Create file immediately so Git doesn't crash
+    out_file.write_text("")
+
+    print("[*] Phase 1: Scraping deep GitHub repositories...")
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
         link_lists = list(pool.map(get_links, SUBSCRIPTION_URLS))
     
     all_raw = list(set([item for sublist in link_lists for item in sublist]))[:MAX_LINKS]
-    print(f"[*] Found {len(all_raw)} total unique links.")
+    print(f"[*] Total links found: {len(all_raw)}")
 
-    # 2. Parse all (No filtering yet)
-    nodes = []
+    print("[*] Phase 2: Testing connectivity...")
+    working = []
+    parsed_nodes = []
     for link in all_raw:
         p = parse(link)
-        if p: nodes.append(p)
+        if p: parsed_nodes.append(p)
 
-    # 3. Test Connectivity (The primary filter)
-    print(f"[*] Testing {len(nodes)} nodes for connectivity...")
-    working = []
     with ThreadPoolExecutor(max_workers=TEST_WORKERS) as pool:
-        futures = [pool.submit(check_tcp, n) for n in nodes]
+        futures = [pool.submit(check_tcp, n) for n in parsed_nodes]
         for f in as_completed(futures):
             res = f.result()
             if res: working.append(res)
     
-    print(f"[*] {len(working)} nodes are alive and fast.")
+    print(f"[*] Online nodes: {len(working)}")
 
-    # 4. Filter by physical location (Geo-Lock)
-    print("[*] Applying Strict CA/US/UK Geo-Lock...")
-    final_nodes = verify_geo_and_filter(working)
+    print("[*] Phase 3: Geo-Locking (CA/US/UK Only)...")
+    final_nodes = verify_geo(working)
     
-    # 5. Sort CA -> US -> UK
+    # Deduplicate and finalize
     order = {"CA": 0, "US": 1, "GB": 2, "UK": 2}
     final_nodes.sort(key=lambda x: order.get(x['cc'], 9))
     
-    # Deduplicate and save
     seen, output = set(), []
     for n in final_nodes:
         key = f"{n['h']}:{n['p']}"
@@ -141,10 +133,10 @@ def main():
             output.append(n['raw'])
             
     if output:
-        Path("hiddify_ca_us_uk.txt").write_text("\n".join(output))
-        print(f"\n[DONE] Saved {len(output)} strictly verified CA/US/UK nodes in {time.time()-start_time:.1f}s")
+        out_file.write_text("\n".join(output))
+        print(f"\n[DONE] Saved {len(output)} nodes. Total time: {time.time()-start_time:.1f}s")
     else:
-        print("\n[-] No CA/US/UK nodes found. This can happen if the free pools are currently empty for these regions.")
+        print("\n[!] No nodes found in CA/US/UK during this run.")
 
 if __name__ == "__main__":
     main()
