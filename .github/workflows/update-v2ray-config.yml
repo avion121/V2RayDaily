@@ -1,15 +1,16 @@
-# Run V2Ray fetcher; commit only working, sorted nodes (America → UK → rest).
-# For automatic runs every 15 min: use cron-job.org to POST to GitHub API (see .github/AUTO-RUN-SETUP.md).
-name: Update V2Ray config (America → UK → rest)
+# Run V2Ray fetcher; commit only strictly verified, working nodes (Canada → USA → UK).
+# For automatic runs every 15 min: use cron-job.org to POST to GitHub API.
+name: Update V2Ray config (Strict CA, US, UK)
 
 on:
   schedule:
-    # Every 15 minutes (more reliable than */5 on GitHub; change to "*/5 * * * *" if you prefer)
+    # Runs every 15 minutes
     - cron: "*/15 * * * *"
   push:
     branches: [main]
     paths:
-      - "america_europe_V2RayProxy.py"
+      # Updated to match your new Python script name
+      - "ca_us_uk_v2ray_fetcher.py"
       - ".github/workflows/update-v2ray-config.yml"
   workflow_dispatch:  # Allow manual run from Actions tab
 
@@ -29,19 +30,25 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
+        # Installed requests as required by the script
         run: pip install requests
 
-      - name: Run V2Ray fetcher (working nodes only, sorted America → UK → rest)
-        run: python america_europe_V2RayProxy.py
+      - name: Run V2Ray fetcher (Strictly CA, US, UK working nodes only)
+        # Updated to run the new python script
+        run: python ca_us_uk_v2ray_fetcher.py
 
       - name: Commit and push if config changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add hiddify_america_europe.txt
+          
+          # Updated to target the new output file
+          git add hiddify_ca_us_uk.txt
+          
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "chore: update hiddify_america_europe.txt (working nodes, America → UK → rest)"
+            # Updated the commit message to reflect the new strict countries
+            git commit -m "chore: update hiddify_ca_us_uk.txt (working nodes, CA → US → UK)"
             git push
           fi
