@@ -8,7 +8,7 @@ concurrency:
 on:
   schedule:
     # Runs exactly every 2 hours
-    - cron: "0 */2 * * **"
+    - cron: "0 */2 * * *"
   push:
     branches: [main]
     paths:
