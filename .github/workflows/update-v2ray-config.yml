@@ -1,24 +1,23 @@
 # Run V2Ray fetcher; commit only strictly verified, working nodes (Canada → USA → UK).
-# For automatic runs every 15 min: use cron-job.org to POST to GitHub API.
 name: Update V2Ray config (Strict CA, US, UK)
 
 on:
   schedule:
-    # Runs every 15 minutes (or as often as GitHub permits)
     - cron: "*/15 * * * *"
   push:
     branches: [main]
     paths:
-      - "ca_us_uk_v2ray_fetcher.py"
+      # This MUST match the name of the file in your repository
+      - "america_europe_V2RayProxy.py"
       - ".github/workflows/update-v2ray-config.yml"
       - "requirements_v2ray_proxy.txt"
-  workflow_dispatch:  # Allow manual run from Actions tab
+  workflow_dispatch:
 
 jobs:
   update:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Allow push to commit the generated file
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -29,24 +28,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies (Unleashes deep protocol testing)
-        # Using the requirements file so GitHub installs python-v2ray for the strict check
+      - name: Install dependencies
         run: pip install -r requirements_v2ray_proxy.txt
 
-      - name: Run V2Ray fetcher (Strictly CA, US, UK working nodes only)
-        run: python ca_us_uk_v2ray_fetcher.py
+      - name: Run V2Ray fetcher
+        # I changed the name here to match your old file name
+        run: python america_europe_V2RayProxy.py
 
       - name: Commit and push if config changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Target the output file created by the new script
+          # This saves the results to the new file name
           git add hiddify_ca_us_uk.txt
           
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "chore: update hiddify_ca_us_uk.txt (100% verified working nodes, CA → US → UK)"
+            git commit -m "chore: update hiddify_ca_us_uk.txt (Strict CA, US, UK)"
             git push
           fi
