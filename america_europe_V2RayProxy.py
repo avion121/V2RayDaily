@@ -18,9 +18,9 @@ RE_TARGET = re.compile(r"CA|CANADA|US|USA|AMERICA|UNITED STATES|UK|GB|LONDON|UNI
 
 # Performance Tuning
 FETCH_WORKERS = 50
-TEST_WORKERS = 100  # Extreme concurrency
+TEST_WORKERS = 100  
 TIMEOUT_FETCH = 10
-TIMEOUT_TCP = 2.0   # If a node is slower than 2s, it's not worth keeping
+TIMEOUT_TCP = 2.0   
 MAX_LINKS = 100000
 
 SUBSCRIPTION_URLS = [
@@ -85,7 +85,7 @@ def verify_geo(nodes):
             r = requests.post("http://ip-api.com/batch?fields=query,countryCode", json=batch, timeout=10)
             for res in r.json(): mapping[res['query']] = res.get('countryCode')
         except: pass
-        time.sleep(0.5) # Minimal sleep to stay under batch limit
+        time.sleep(0.5) 
     
     verified = []
     for n in nodes:
@@ -98,9 +98,9 @@ def verify_geo(nodes):
 def main():
     start = time.time()
     
-    # 1. Parallel Fetch
+    # 1. Parallel Fetch (fixed keyword argument)
     print("[*] Rapidly Scouring GitHub...")
-    with ThreadPoolExecutor(MAX_WORKERS=FETCH_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
         results = list(pool.map(get_links, SUBSCRIPTION_URLS))
     all_raw = list(set([item for sublist in results for item in sublist]))[:MAX_LINKS]
     
@@ -108,14 +108,14 @@ def main():
     print(f"[*] Pre-filtering {len(all_raw)} links...")
     candidates = []
     for link in all_raw:
-        if RE_TARGET.search(link): # Fast regex check on raw string
+        if RE_TARGET.search(link): 
             p = parse(link)
             if p: candidates.append(p)
     
-    # 3. Parallel TCP Check
+    # 3. Parallel TCP Check (fixed keyword argument)
     print(f"[*] Testing {len(candidates)} nodes...")
     working = []
-    with ThreadPoolExecutor(MAX_WORKERS=TEST_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=TEST_WORKERS) as pool:
         futures = [pool.submit(check_tcp, c) for c in candidates]
         for f in as_completed(futures):
             res = f.result()
