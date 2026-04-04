@@ -6,7 +6,7 @@ ULTIMATE CA, US, UK V2Ray Proxy Fetcher (Maximum GitHub Database Edition)
 Deeply scrapes tens of thousands of free V2Ray (VMess/VLESS) configs from the 
 largest daily-updated GitHub public subscriptions in existence.
 STRICTLY enforces Canada, USA, and UK nodes ONLY. 
-Uses an aggressive Hybrid Name-Check + Live TCP Test + Strict GeoIP Verification 
+Uses an aggressive Hybrid Name-Check + Live Protocol Test + Strict GeoIP Verification 
 pipeline to guarantee absolutely NO other countries are allowed at any cost.
 """
 
@@ -29,13 +29,13 @@ except ImportError:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "requests", "-q"])
     import requests
 
-# Optional: pyperclip for automatic clipboard copying
+# Optional: pyperclip for automatic clipboard copying (local use)
 try:
     import pyperclip
 except ImportError:
     pyperclip = None
 
-# Optional: real VMess/VLESS handshake testing
+# Optional: real VMess/VLESS handshake testing (via python-v2ray)
 USE_STRICT_TEST = True
 _v2ray_tester = None
 _v2ray_available = None
@@ -106,7 +106,6 @@ MAX_WORKERS = 20
 MAX_LINKS_TO_PROCESS = 100000  # Built to handle massive lists
 
 # STRICT ALLOWLIST: Absolutely no other countries.
-# GB is the ISO standard code for the United Kingdom.
 CANADA_CODES = {"CA"}
 USA_CODES = {"US"}
 UK_CODES = {"GB", "UK"}
@@ -136,14 +135,15 @@ def _ensure_strict_tester():
         )
         _v2ray_available = True
         return tester, pv2_parse_uri
-    except Exception:
+    except Exception as e:
+        print(f"  [note] Strict protocol tester unavailable: {e}")
         _v2ray_available = False
         return None, None
 
 def test_nodes_strict(links: list[str]) -> tuple[list[str], list[dict]]:
     tester, parse_uri_fn = _ensure_strict_tester()
     if not tester or not parse_uri_fn:
-        return [],[]
+        return [], []
     parsed = []
     valid_links =[]
     for uri in links:
@@ -158,7 +158,8 @@ def test_nodes_strict(links: list[str]) -> tuple[list[str], list[dict]]:
         return [],[]
     try:
         results = tester.test_uris(parsed)
-    except Exception:
+    except Exception as e:
+        print(f"  [warn] Strict test encountered an error: {e}")
         return [], []
     working_links = [
         valid_links[i] for i, r in enumerate(results)
@@ -236,7 +237,7 @@ def is_target_country_name(ps: str) -> bool:
     ps_upper = (" " + (ps or "") + " ").upper()
     
     # Replace separators with spaces to ensure exact word matches
-    for char in["-", "_", "|", ":", "[", "]", "(", ")", "，", ",", ".", "/"]:
+    for char in ["-", "_", "|", ":", "[", "]", "(", ")", "，", ",", ".", "/"]:
         ps_upper = ps_upper.replace(char, " ")
     
     words = set(ps_upper.split())
@@ -292,7 +293,7 @@ def region_priority(node: dict) -> int:
     return 99 # Failsafe
 
 def test_tcp(host: str, port: int) -> bool:
-    """FIREWALL 2: Connectivity Check. Drops offline servers immediately."""
+    """FIREWALL 2: Connectivity Check fallback. Drops offline servers immediately."""
     try:
         sock = socket.create_connection((host, port), timeout=TCP_TIMEOUT)
         sock.close()
@@ -343,16 +344,18 @@ def main():
     working_nodes = []
     links_only_for_test = [n["link"] for n in potential_nodes]
 
-    # Try deep V2Ray protocol testing if the user has the module installed
+    # Try deep V2Ray protocol testing if the user/GitHub Actions has the module installed
     if USE_STRICT_TEST:
         working_links, strict_results = test_nodes_strict(links_only_for_test)
         if working_links:
             working_nodes =[n for n in potential_nodes if n["link"] in working_links]
             for r in (strict_results or[]):
                 if r.get("status") == "success":
-                    print(f"  [ONLINE] {r.get('tag', '')[:40]}... | Latency: {r.get('ping_ms', -1)} ms")
+                    print(f"  [ONLINE & VERIFIED PROTOCOL] {r.get('tag', '')[:40]}... | Latency: {r.get('ping_ms', -1)} ms")
+        elif strict_results is not None:
+            print("[-] Deep protocol test found no working servers. Falling back to TCP ping...")
 
-    # TCP testing fallback / primary execution
+    # TCP testing fallback (if deep test fails or python-v2ray is missing)
     if not working_nodes:
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             futures = {ex.submit(test_tcp, n["host"], n["port"]): n for n in potential_nodes}
@@ -361,7 +364,7 @@ def main():
                 try:
                     if fut.result():
                         working_nodes.append(node)
-                        print(f"  [ONLINE] {node['ps'][:40]} ({node['host']}:{node['port']})")
+                        print(f"[ONLINE (TCP)] {node['ps'][:40]} ({node['host']}:{node['port']})")
                 except Exception:
                     pass
 
@@ -404,7 +407,7 @@ def main():
     n_ca = sum(1 for n in final_strict_nodes if n["country"] in CANADA_CODES)
     n_us = sum(1 for n in final_strict_nodes if n["country"] in USA_CODES)
     n_uk = sum(1 for n in final_strict_nodes if n["country"] in UK_CODES)
-    print(f" Breakdown: Canada[{n_ca}], USA [{n_us}], UK [{n_uk}]")
+    print(f" Breakdown: Canada [{n_ca}], USA [{n_us}], UK [{n_uk}]")
 
     # Remove identical duplicate configurations
     seen_key: dict[tuple[str, int, str], str] = {}
@@ -422,8 +425,8 @@ def main():
         f.write(content)
     print(f"\n[+] Saved flawlessly verified nodes to: {out_file.name}")
 
-    # Auto-copy to clipboard
-    in_ci = os.environ.get("CI") == "true"
+    # Auto-copy to clipboard (for local execution)
+    in_ci = os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true"
     if not in_ci and pyperclip:
         try:
             pyperclip.copy(content)
@@ -432,9 +435,8 @@ def main():
             print(f"[-] Clipboard copy failed: {e}. Please open {out_file.name} to copy manually.")
     elif not in_ci:
         print("\nTip: Install 'pyperclip' (pip install pyperclip) to auto-copy to your clipboard.")
-        print(f"For now, open {out_file.name}, select all, copy, and paste into Hiddify.")
 
-    print("\nTask complete. Paste from clipboard into Hiddify or v2rayN!")
+    print("\nTask complete.")
 
 if __name__ == "__main__":
     main()
