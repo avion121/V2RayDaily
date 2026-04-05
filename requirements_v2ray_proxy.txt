@@ -1,3 +1,4 @@
-
+requests>=2.31.0
+urllib3>=2.0.0
 # Optional: for real VMess/VLESS handshake testing (highly recommended for strict testing)
 python-v2ray>=0.1.8
