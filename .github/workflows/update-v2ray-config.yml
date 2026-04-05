@@ -1,4 +1,4 @@
-name: Update V2Ray Config (Strict US, UK, CA)
+name: Update V2Ray Config (Multi-Region)
 
 concurrency:
   group: v2ray-update
@@ -41,10 +41,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add hiddify_ca_us_uk.txt
+          
+          # Add all 5 new categorized files
+          git add fastest_global.txt na_us_mx.txt sa.txt uk.txt canada.txt
+          
           if git diff --staged --quiet; then
             echo "No changes to commit."
           else
-            git commit -m "chore: update hiddify_ca_us_uk.txt [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+            git commit -m "chore: update multi-region proxy lists [$(date -u '+%Y-%m-%d %H:%M UTC')]"
             git push
           fi
