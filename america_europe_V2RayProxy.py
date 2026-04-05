@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import base64, json, socket, subprocess, sys, time, urllib.parse
+import base64, json, socket, subprocess, sys, time, urllib.parse, html, re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -11,10 +11,10 @@ except ImportError:
     import requests
 
 # --- CONFIGURATION ---
-MAX_LINKS_TO_TEST = 4000     # How many links to ping test (Higher = better results, but takes longer)
-MAX_PER_LIST = 100           # Max nodes per output file
-TCP_TIMEOUT = 2.5            # 2.5s timeout. We only want FAST nodes.
-MAX_RTT_MS = 600             # Allow up to 600ms for South America, but sort by lowest ping.
+MAX_LINKS_TO_TEST = 4000
+MAX_PER_LIST = 100
+TCP_TIMEOUT = 2.5
+MAX_RTT_MS = 600
 
 # Output Files
 FILES = {
@@ -26,12 +26,10 @@ FILES = {
 }
 for f in FILES.values(): Path(f).touch()
 
-# Region Definitions
 SA_COUNTRIES = {"BR", "AR", "CL", "CO", "PE", "VE", "EC", "BO", "PY", "UY"}
-NA_COUNTRIES = {"US", "MX", "PA", "CR"} # Keeping CA separate as requested
+NA_COUNTRIES = {"US", "MX", "PA", "CR"}
 
-# Global Config Sources
-SUBSCRIPTION_URLS = [
+SUBSCRIPTION_URLS =[
     "https://raw.githubusercontent.com/barry-far/V2ray-Configs/main/All_Configs_Sub.txt",
     "https://raw.githubusercontent.com/barry-far/V2ray-Config/main/Splitted-By-Protocol/vless.txt",
     "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
@@ -51,7 +49,7 @@ def fetch_url(url):
 
 def decode_sub(raw):
     links = []
-    if not raw: return []
+    if not raw: return[]
     for chunk in raw.split():
         try:
             decoded = base64.b64decode(chunk + "==").decode("utf-8", errors="ignore")
@@ -62,19 +60,49 @@ def decode_sub(raw):
         if line.startswith(("vmess://", "vless://")): links.append(line.strip())
     return list(set(links))
 
+def has_garbage(text):
+    """Detects emojis, broken brackets, and placeholder garbage that crashes Hiddify"""
+    if not text: return False
+    # If any of these are in the SNI, Host, or Path, it's a corrupted link.
+    garbage_chars = ["🔒", "[", "]", "{", "}", " ", "EbraSha", "extra="]
+    return any(c in text for c in garbage_chars)
+
 def parse_link(link):
     try:
+        # FIX 1: Unescape broken HTML ampersands (e.g., &amp;security= -> &security=)
+        link = html.unescape(link).replace("&amp;", "&")
+
         if link.startswith("vmess://"):
             data = json.loads(base64.b64decode(link[8:] + "==").decode("utf-8"))
+            
+            # FIX 2: Strict Garbage Filtering
+            if has_garbage(str(data.get("sni", ""))) or has_garbage(str(data.get("host", ""))):
+                return None
+            if not data.get("add") or not str(data.get("port", "")).isdigit():
+                return None
+
             return {
                 "host": data.get("add"), "port": int(data.get("port", 0)),
                 "ps": data.get("ps", ""), "net": data.get("net", ""),
                 "security": data.get("tls", ""), "is_reality": False, "link": link
             }
+            
         if link.startswith("vless://"):
             parsed = urllib.parse.urlparse(link)
             params = urllib.parse.parse_qs(parsed.query)
+            
             security = params.get("security", [""])[0].lower()
+            sni = params.get("sni", [""])[0]
+            path = params.get("path", [""])[0]
+            flow = params.get("flow", [""])[0]
+            
+            # FIX 3: Catch broken VLESS configurations
+            if not parsed.hostname or not str(parsed.port).isdigit(): return None
+            if has_garbage(sni) or has_garbage(path) or has_garbage(urllib.parse.unquote(link)): return None
+            # Catch "security=" empty string errors
+            if security == "" and "security=" in link: return None
+            if flow == "" and "flow=" in link: return None
+
             return {
                 "host": parsed.hostname, "port": parsed.port or 443,
                 "ps": urllib.parse.unquote(parsed.fragment or ""),
@@ -102,7 +130,7 @@ def check_connectivity_with_rtt(node):
 def batch_geoip_lookup(ips):
     results = {}
     try:
-        payload = [{"query": ip, "fields": "countryCode,city,isp,query"} for ip in ips]
+        payload =[{"query": ip, "fields": "countryCode,city,isp,query"} for ip in ips]
         r = requests.post("http://ip-api.com/batch", json=payload, timeout=15)
         for data in r.json():
             if data.get("status") != "fail":
@@ -115,7 +143,7 @@ def batch_geoip_lookup(ips):
     return results
 
 def main():
-    print("=== V2RAY MULTI-REGION FETCHER (FASTEST, NA, SA, UK, CA) ===")
+    print("=== V2RAY MULTI-REGION FETCHER (STRICT SANITIZATION) ===")
     
     raw_data = ""
     for url in SUBSCRIPTION_URLS:
@@ -126,21 +154,21 @@ def main():
     all_links = decode_sub(raw_data)
     print(f"\n[+] Total unique links found: {len(all_links)}")
 
-    candidates = []
+    candidates =[]
     for l in all_links:
         p = parse_link(l)
         if p and p["host"]: candidates.append(p)
 
-    # Prioritize Reality nodes and regular TCP over Websocket for testing
     candidates.sort(key=lambda x: (not x["is_reality"], x["net"] == "ws"))
     candidates = candidates[:MAX_LINKS_TO_TEST]
     
+    print(f"[*] Clean candidates surviving strict filter: {len(candidates)}")
     print(f"[*] Ping testing top {len(candidates)} candidates (Threads=100)...")
-    working_nodes = []
+    working_nodes =[]
     seen_ips = set()
     
     with ThreadPoolExecutor(max_workers=100) as executor:
-        futures = [executor.submit(check_connectivity_with_rtt, c) for c in candidates]
+        futures =[executor.submit(check_connectivity_with_rtt, c) for c in candidates]
         for fut in as_completed(futures):
             res = fut.result()
             if res and res["ip"] not in seen_ips:
@@ -150,7 +178,6 @@ def main():
     print(f"[+] {len(working_nodes)} unique, active nodes responded.")
     print("\n[*] Batch GeoIP verification...")
 
-    # Fetch GeoIP for all working nodes
     for i in range(0, len(working_nodes), 100):
         batch = working_nodes[i:i+100]
         geo_data = batch_geoip_lookup([n["ip"] for n in batch])
@@ -160,50 +187,30 @@ def main():
             node["city"] = info[1]
             node["isp"] = info[2]
 
-    # Filter out Cloudflare disguised IPs
-    valid_nodes = [n for n in working_nodes if n.get("isp") and "cloudflare" not in n["isp"].lower()]
-
-    # Sort all by ping (fastest first)
+    valid_nodes =[n for n in working_nodes if n.get("isp") and "cloudflare" not in n["isp"].lower()]
     valid_nodes.sort(key=lambda x: x["rtt"])
 
-    # Categorize
-    lists = {"fastest": [], "na": [], "sa": [], "uk": [], "canada": []}
+    lists = {"fastest": [], "na":[], "sa": [], "uk": [], "canada":[]}
 
     for n in valid_nodes:
         cc = n.get("country")
-        
-        # 1. Fastest Global (Top low ping nodes anywhere)
-        if len(lists["fastest"]) < MAX_PER_LIST:
-            lists["fastest"].append(n)
-            
-        # 2. North America
-        if cc in NA_COUNTRIES and len(lists["na"]) < MAX_PER_LIST:
-            lists["na"].append(n)
-            
-        # 3. South America
-        if cc in SA_COUNTRIES and len(lists["sa"]) < MAX_PER_LIST:
-            lists["sa"].append(n)
-            
-        # 4. UK
-        if cc == "GB" and len(lists["uk"]) < MAX_PER_LIST:
-            lists["uk"].append(n)
-            
-        # 5. Canada
-        if cc == "CA" and len(lists["canada"]) < MAX_PER_LIST:
-            lists["canada"].append(n)
+        if len(lists["fastest"]) < MAX_PER_LIST: lists["fastest"].append(n)
+        if cc in NA_COUNTRIES and len(lists["na"]) < MAX_PER_LIST: lists["na"].append(n)
+        if cc in SA_COUNTRIES and len(lists["sa"]) < MAX_PER_LIST: lists["sa"].append(n)
+        if cc == "GB" and len(lists["uk"]) < MAX_PER_LIST: lists["uk"].append(n)
+        if cc == "CA" and len(lists["canada"]) < MAX_PER_LIST: lists["canada"].append(n)
 
-    # Save and Print Summary
     print(f"\n{'='*50}")
     for key, nodes in lists.items():
         filename = FILES[key]
         with open(filename, "w", encoding="utf-8") as f:
             f.write("\n".join(n["link"] for n in nodes))
             
-        print(f"[{key.upper()}] Saved {len(nodes)} nodes -> {filename}")
+        print(f"[{key.upper()}] Saved {len(nodes)} clean nodes -> {filename}")
         if nodes:
             avg_ping = sum(n["rtt"] for n in nodes) / len(nodes)
             print(f"      Avg Ping: {avg_ping:.1f}ms | Top Country: {nodes[0].get('country')}")
-    print(f"{'='*50}\n[DONE] Successfully categorized and saved all lists.")
+    print(f"{'='*50}\n[DONE] Successfully sanitized, categorized and saved all lists.")
 
 if __name__ == "__main__":
     main()
