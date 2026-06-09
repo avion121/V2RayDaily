@@ -1,3 +1,2 @@
-vmess://eyJhZGQiOiIxNzIuMjMzLjE3Ljc2IiwiaWQiOiIwNDYyMWJhZS1hYjM2LTExZWMtYjkwOS0wMjQyYWMxMjAwMDIiLCJuZXQiOiJyYXciLCJwb3J0IjoiMjIzMjQiLCJwcyI6IkJ5IEVicmFTaGEg8J+mviIsInNjeSI6ImF1dG8iLCJ0bHMiOiJub25lIiwidHlwZSI6Im5vbmUiLCJ2IjoiMiJ9
+vmess://eyJhZGQiOiIxNzIuMjMzLjE3Ljc2IiwiaWQiOiIwNDYyMWJhZS1hYjM2LTExZWMtYjkwOS0wMjQyYWMxMjAwMDIiLCJuZXQiOiJyYXciLCJwb3J0IjoiMjIzMjQiLCJwcyI6IkJ5IEVicmFTaGEg8J+TtiIsInNjeSI6ImF1dG8iLCJ0bHMiOiJub25lIiwidHlwZSI6Im5vbmUiLCJ2IjoiMiJ9
 vless://5f9366ec-90e6-4263-a37e-fe90e11668b8@iran.wpax.ir:1050?encryption=none&security=none&type=tcp&headerType=none&host=arvancload.ir#🇹🇷TR-🚀@VPNine1
-vless://2e409cdc-d0c9-4fc0-b285-9371034b8002@1.call-me-seyed.ir:8080?path=/&security=none&encryption=none&type=ws#TEL;Father_vpn
